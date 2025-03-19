@@ -2,6 +2,7 @@ import torch.nn as nn
 from common import ConvBlock, FastNormalizedFusion, ConvTransposeBlock
 import torch.nn.functional as F
 
+
 class SegmentationHead(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(SegmentationHead, self).__init__()
@@ -15,7 +16,9 @@ class SegmentationHead(nn.Module):
         self.p12_td_conv = ConvBlock(in_channels, in_channels, 1)
 
         self.upsample1 = ConvTransposeBlock(in_channels, in_channels // 2, 3, 2, 1)
-        self.upsample2 = ConvTransposeBlock(in_channels // 2, in_channels // 2 // 2, 3, 2, 1)
+        self.upsample2 = ConvTransposeBlock(
+            in_channels // 2, in_channels // 2 // 2, 3, 2, 1
+        )
         self.out = ConvBlock(in_channels // 2 // 2, out_channels, 3, 1, 1)
 
     def forward(self, p1, p2, p3, p4):
@@ -31,8 +34,15 @@ class SegmentationHead(nn.Module):
             p2_td_out, size=(60, 107), mode="bilinear", align_corners=False
         )
         p1_td_out = self.p12_td_conv(self.p12_td_fuse(p1, p2_td))
-        
-        up1 = F.interpolate(self.upsample1(p1_td_out), size=(120, 214), mode="bilinear", align_corners=False)
-        up2 = F.interpolate(self.upsample2(up1), size=(240, 428), mode="bilinear", align_corners=False)
+
+        up1 = F.interpolate(
+            self.upsample1(p1_td_out),
+            size=(120, 214),
+            mode="bilinear",
+            align_corners=False,
+        )
+        up2 = F.interpolate(
+            self.upsample2(up1), size=(240, 428), mode="bilinear", align_corners=False
+        )
         out = self.out(up2)
         return out

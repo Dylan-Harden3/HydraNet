@@ -2,6 +2,7 @@ import torch.nn as nn
 import torch
 import torch.nn.functional as F
 
+
 # TODO add depthwise separable convolutions
 class ConvBlock(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0):
@@ -19,6 +20,7 @@ class ConvBlock(nn.Module):
     def forward(self, x):
         return self.act(self.norm(self.conv(x)))
 
+
 class ConvTransposeBlock(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0):
         super(ConvTransposeBlock, self).__init__()
@@ -31,6 +33,7 @@ class ConvTransposeBlock(nn.Module):
         )
         self.norm = nn.BatchNorm2d(out_channels)
         self.act = nn.ReLU()
+
     def forward(self, x):
         return self.act(self.norm(self.conv(x)))
 
