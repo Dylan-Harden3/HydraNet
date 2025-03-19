@@ -1,36 +1,6 @@
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision.models as models
-import torch
-
-
-# TODO add depthwise separable convolutions
-class ConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0):
-        super(ConvBlock, self).__init__()
-        self.conv = nn.Conv2d(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            kernel_size=kernel_size,
-            stride=stride,
-            padding=padding,
-        )
-        self.norm = nn.BatchNorm2d(out_channels)
-        self.act = nn.ReLU()
-
-    def forward(self, x):
-        return self.act(self.norm(self.conv(x)))
-
-
-class FastNormalizedFusion(nn.Module):
-    def __init__(self, n_inputs):
-        super(FastNormalizedFusion, self).__init__()
-        self.w = nn.Parameter(torch.ones(n_inputs))
-
-    def forward(self, *x):
-        weights = F.relu(self.w)
-        weights_norm = weights / (weights.sum() + 1e-4)
-        return F.relu(sum([i * w for i, w in zip(x, weights_norm)]))
+from common import ConvBlock, FastNormalizedFusion
 
 
 # TODO BiFPNConfig or something?
@@ -58,16 +28,16 @@ class BiFPNBlock(nn.Module):
 
     def forward(self, p1, p2, p3, p4):
         # top-down pathway
-        p4_td = F.interpolate(p4, size=(13, 13), mode="bilinear", align_corners=False)
+        p4_td = F.interpolate(p4, size=(15, 27), mode="bilinear", align_corners=False)
         p3_td_out = self.p34_td_conv(self.p34_td_fuse(p3, p4_td))
 
         p3_td = F.interpolate(
-            p3_td_out, size=(25, 25), mode="bilinear", align_corners=False
+            p3_td_out, size=(30, 54), mode="bilinear", align_corners=False
         )
         p2_td_out = self.p23_td_conv(self.p23_td_fuse(p2, p3_td))
 
         p2_td = F.interpolate(
-            p2_td_out, size=(50, 50), mode="bilinear", align_corners=False
+            p2_td_out, size=(60, 107), mode="bilinear", align_corners=False
         )
         p1_td_out = self.p12_td_conv(self.p12_td_fuse(p1, p2_td))
 
