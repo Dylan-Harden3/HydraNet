@@ -4,11 +4,11 @@ import torchvision.models as models
 
 
 class RegNetBackbone(nn.Module):
-    def __init__(self):
+    def __init__(self, regnet):
         super(RegNetBackbone, self).__init__()
-        self.regnet = models.regnet_y_400mf(weights="IMAGENET1K_V1")
+        self.regnet = regnet
         self.features = {}
-    
+
     def register_hooks(self):
         for i, stage in enumerate(self.regnet.trunk_output):
             stage.register_forward_hook(self.get_feature_hook(f"stage{i+1}"))

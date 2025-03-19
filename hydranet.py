@@ -4,13 +4,13 @@ from backbone import RegNetBackbone
 from bifpn import BiFPN
 from heads import SegmentationHead
 
+
 class HydraNet(nn.Module):
-    def __init__(self):
+    def __init__(self, backbone, bifpn):
         super(HydraNet, self).__init__()
-        self.backbone = RegNetBackbone()
-        in_features = 160
-        self.bifpn = BiFPN([48, 104, 208, 440], in_features)
-        self.segmentation_head = SegmentationHead(in_features, 3)
+        self.backbone = backbone
+        self.bifpn = bifpn
+        self.segmentation_head = SegmentationHead(160, 3)
 
     def forward(self, x):
         x = self.backbone(x)

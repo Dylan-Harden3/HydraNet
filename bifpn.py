@@ -3,41 +3,49 @@ import torch.nn.functional as F
 from common import ConvBlock, FastNormalizedFusion
 
 
-# TODO BiFPNConfig or something?
 class BiFPNBlock(nn.Module):
-    def __init__(self, num_channels):
+    def __init__(self, n_channels, pyramid_shape):
         super(BiFPNBlock, self).__init__()
-        # TODO probably a better way to do this, fine for now though
         self.p34_td_fuse = FastNormalizedFusion(2)
-        self.p34_td_conv = ConvBlock(num_channels, num_channels, 1)
+        self.p34_td_conv = ConvBlock(n_channels, n_channels, 1)
 
         self.p23_td_fuse = FastNormalizedFusion(2)
-        self.p23_td_conv = ConvBlock(num_channels, num_channels, 1)
+        self.p23_td_conv = ConvBlock(n_channels, n_channels, 1)
 
         self.p12_td_fuse = FastNormalizedFusion(2)
-        self.p12_td_conv = ConvBlock(num_channels, num_channels, 1)
+        self.p12_td_conv = ConvBlock(n_channels, n_channels, 1)
 
         self.p12_bu_fuse = FastNormalizedFusion(3)
-        self.p12_bu_conv = ConvBlock(num_channels, num_channels, 1)
+        self.p12_bu_conv = ConvBlock(n_channels, n_channels, 1)
 
         self.p23_bu_fuse = FastNormalizedFusion(3)
-        self.p23_bu_conv = ConvBlock(num_channels, num_channels, 1)
+        self.p23_bu_conv = ConvBlock(n_channels, n_channels, 1)
 
         self.p4_bu_fuse = FastNormalizedFusion(2)
-        self.p4_bu_conv = ConvBlock(num_channels, num_channels, 1)
+        self.p4_bu_conv = ConvBlock(n_channels, n_channels, 1)
+
+        self.pyramid_shape = pyramid_shape
 
     def forward(self, p1, p2, p3, p4):
         # top-down pathway
-        p4_td = F.interpolate(p4, size=(15, 27), mode="bilinear", align_corners=False)
+        p4_td = F.interpolate(
+            p4, size=self.pyramid_shape[2][1:], mode="bilinear", align_corners=False
+        )
         p3_td_out = self.p34_td_conv(self.p34_td_fuse(p3, p4_td))
 
         p3_td = F.interpolate(
-            p3_td_out, size=(30, 54), mode="bilinear", align_corners=False
+            p3_td_out,
+            size=self.pyramid_shape[1][1:],
+            mode="bilinear",
+            align_corners=False,
         )
         p2_td_out = self.p23_td_conv(self.p23_td_fuse(p2, p3_td))
 
         p2_td = F.interpolate(
-            p2_td_out, size=(60, 107), mode="bilinear", align_corners=False
+            p2_td_out,
+            size=self.pyramid_shape[0][1:],
+            mode="bilinear",
+            align_corners=False,
         )
         p1_td_out = self.p12_td_conv(self.p12_td_fuse(p1, p2_td))
 
@@ -55,21 +63,24 @@ class BiFPNBlock(nn.Module):
 
 
 class BiFPN(nn.Module):
-    def __init__(self, size, feature_size):
+    def __init__(self, n_channels, n_blocks, pyramid_shape):
         super(BiFPN, self).__init__()
         self.p1_proj = ConvBlock(
-            in_channels=size[0], out_channels=feature_size, kernel_size=1
-        )  # B,48,50,50  -> B,feature_size,50,50
+            in_channels=pyramid_shape[0][0], out_channels=n_channels, kernel_size=1
+        )
         self.p2_proj = ConvBlock(
-            in_channels=size[1], out_channels=feature_size, kernel_size=1
-        )  # B,104,25,25 -> B,feature_size,25,25
+            in_channels=pyramid_shape[1][0], out_channels=n_channels, kernel_size=1
+        )
         self.p3_proj = ConvBlock(
-            in_channels=size[2], out_channels=feature_size, kernel_size=1
-        )  # B,208,13,13 -> B,feature_size,13,13
+            in_channels=pyramid_shape[2][0], out_channels=n_channels, kernel_size=1
+        )
         self.p4_proj = ConvBlock(
-            in_channels=size[3], out_channels=feature_size, kernel_size=1
-        )  # B,440,7,7   -> B,feature_size,7,7
-        self.bifpn1 = BiFPNBlock(feature_size)
+            in_channels=pyramid_shape[3][0], out_channels=n_channels, kernel_size=1
+        )
+
+        self.bifpns = nn.ModuleList(
+            [BiFPNBlock(n_channels, pyramid_shape) for _ in range(n_blocks)]
+        )
 
     def forward(self, x):
         p1, p2, p3, p4 = x
@@ -79,6 +90,7 @@ class BiFPN(nn.Module):
         p3 = self.p3_proj(p3)
         p4 = self.p4_proj(p4)
 
-        p1, p2, p3, p4 = self.bifpn1(p1, p2, p3, p4)
+        for bifpn in self.bifpns:
+            p1, p2, p3, p4 = bifpn(p1, p2, p3, p4)
 
         return p1, p2, p3, p4
