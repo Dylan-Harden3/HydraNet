@@ -4,6 +4,7 @@ import os
 from typing import Tuple
 from random import randint
 from collections import Counter
+from tqdm import tqdm
 
 class Box:
     def __init__(self, x: dict):
@@ -48,14 +49,14 @@ def parse_boxes(dataset_path: str) -> list[dict]:
         boxes[i].y1 = 0.0
     return boxes
 
-def get_anchors(boxes: list[Box], k=9, max_iters=50) -> list[Tuple[int, int]]:
+def get_anchors(boxes: list[Box], k: int, max_iters: int) -> list[Tuple[int, int]]:
     centroids = set()
     while len(centroids) < k:
         centroids.add(randint(0, len(boxes)))
     centroids = {cluster: boxes[boxix] for cluster, boxix in enumerate(centroids)}
     
     clusters = [i for i in range(len(boxes))]
-    for _ in range(max_iters):
+    for _ in tqdm(range(max_iters)):
         for i in range(len(boxes)):
             min_dist, cluster = float("-inf"), None
             for centroid, box in centroids.items():
@@ -80,7 +81,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset_path", required=True)
     parser.add_argument("--k", type=int, default=9)
-    parser.add_argument("--max_iters", type=int, default=10)
+    parser.add_argument("--max_iters", type=int, default=50)
     args = parser.parse_args()
     boxes = parse_boxes(args.dataset_path)
     anchors = get_anchors(boxes, k=args.k, max_iters=args.max_iters)
