@@ -22,35 +22,25 @@ class SegmentationHead(nn.Module):
         self.out = ConvBlock(in_channels // 2 // 2, out_channels, 3, 1, 1)
 
     def forward(self, p1, p2, p3, p4):
-        p4_td = F.interpolate(p4, size=(15, 27), mode="bilinear", align_corners=False)
+        p4_td = F.interpolate(p4, size=(16, 16), mode="bilinear", align_corners=False)
         p3_td_out = self.p34_td_conv(self.p34_td_fuse(p3, p4_td))
 
-        p3_td = F.interpolate(
-            p3_td_out, size=(30, 54), mode="bilinear", align_corners=False
-        )
+        p3_td = F.interpolate(p3_td_out, size=(32, 32), mode="bilinear", align_corners=False)
         p2_td_out = self.p23_td_conv(self.p23_td_fuse(p2, p3_td))
 
-        p2_td = F.interpolate(
-            p2_td_out, size=(60, 107), mode="bilinear", align_corners=False
-        )
+        p2_td = F.interpolate(p2_td_out, size=(64, 64), mode="bilinear", align_corners=False)
         p1_td_out = self.p12_td_conv(self.p12_td_fuse(p1, p2_td))
 
-        up1 = F.interpolate(
-            self.upsample1(p1_td_out),
-            size=(120, 214),
-            mode="bilinear",
-            align_corners=False,
-        )
-        up2 = F.interpolate(
-            self.upsample2(up1), size=(240, 428), mode="bilinear", align_corners=False
-        )
-        out = self.out(up2)
-        return out
+        up1 = F.interpolate(self.upsample1(p1_td_out), size=(128, 128), mode="bilinear", align_corners=False)
+        up2 = F.interpolate(self.upsample2(up1), size=(256, 256), mode="bilinear", align_corners=False)
+
+        return self.out(up2)
 
 class ObjectDetectionHead(nn.Module):
     def __init__(self, in_channels, num_classes, num_anchors=3):
         # for each anchor:
         # x, y, h, w, object score + per class probabilites
+        super(ObjectDetectionHead, self).__init__()
         out_channels = num_anchors * (5 + num_classes)
         self.num_classes = num_classes
 
@@ -65,7 +55,7 @@ class ObjectDetectionHead(nn.Module):
         p2 = self.conv2(p2)
         p3 = self.conv3(p3)
         p4 = self.conv4(p4)
-        
+
         return p1, p2, p3, p4
 
 
@@ -88,5 +78,5 @@ def decode_object_predictions(preds, anchors, strides, num_classes):
 
         pred = pred.reshape(B, H * W * 3, 5 + num_classes)
         outputs.append(pred)
-    
+
     return torch.cat(outputs, dim=1)

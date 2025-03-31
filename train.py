@@ -3,42 +3,50 @@ import os
 import torch
 from PIL import Image
 from hydranet import HydraNet
+from hydranetfactory import HydraNetFactory, HydraNetConfig
 import json
 from torch.utils.data import Dataset, DataLoader
 from torchvision.transforms import v2
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
 
+def save_checkpoint(model, optimizer, scheduler, epoch, train_losses, val_losses, filepath):
+  checkpoint = {
+          'epoch': epoch,
+          'model_state_dict': model.state_dict(),
+          'optimizer_state_dict': optimizer.state_dict(),
+          'scheduler_state_dict': scheduler.state_dict(),
+          'train_losses': train_losses,
+          'val_losses': val_losses,
+      }
+  torch.save(checkpoint, f'{filepath}/model_checkpoint_{epoch}.pt')
+  torch.save(model.state_dict(), f'{filepath}/model_checkpoint_{epoch}.pt')
+
+def load_checkpoint(filepath, model, optimizer, scheduler):
+    checkpoint = torch.load(filepath, map_location=torch.device('cpu'))
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+    start_epoch = checkpoint['epoch']
+    train_losses = checkpoint['train_losses']
+    val_losses = checkpoint['val_losses']
+    return model, optimizer, scheduler, start_epoch, train_losses, val_losses
 
 class BDD100KDataset(Dataset):
-    def __init__(self, image_dir, drivable_dir, det_json, pose_json, transform=None):
+    def __init__(self, image_dir, drivable_dir, lane_dir, det_json, transform=None):
         self.image_dir = image_dir
         self.drivable_dir = drivable_dir
+        self.lane_dir = lane_dir
         self.transform = transform
 
-        self.image_filenames = sorted(os.listdir(image_dir))
-        self.drivable_filenames = sorted(os.listdir(drivable_dir))
+        self.image_filenames = sorted(os.listdir(self.image_dir))
+        self.drivable_filenames = sorted(os.listdir(self.drivable_dir))
+        self.lane_filenames = sorted(os.listdir(self.lane_dir))
 
         with open(det_json, 'r') as f:
             self.det_annotations = json.load(f)
-        
-        with open(pose_json, 'r') as f:
-            pose_data = json.load(f)
-            self.pose_annotations = pose_data.get("frames", [])
 
         self.det_map = {ann["name"]: ann for ann in self.det_annotations}
-        self.pose_map = {ann["name"]: ann for ann in self.pose_annotations}
-
-    def _extract_keypoints(self, pose_annotation):
-        if not pose_annotation or "labels" not in pose_annotation or pose_annotation["labels"] is None:
-            return torch.zeros((0, 18, 2), dtype=torch.float32)
-
-        keypoints = []
-        for person in pose_annotation["labels"]:
-            if "graph" in person and "nodes" in person["graph"]:
-                person_keypoints = [node["location"] for node in person["graph"]["nodes"]]
-                keypoints.append(person_keypoints)
-
-        return torch.tensor(keypoints, dtype=torch.float32) if keypoints else torch.zeros((0, 18, 2), dtype=torch.float32)
 
     def _extract_bboxes(self, det_annotation):
         bboxes = []
@@ -59,98 +67,184 @@ class BDD100KDataset(Dataset):
 
         # Drivable Path
         drivable_path = os.path.join(self.drivable_dir, self.drivable_filenames[idx])
-        drivable_mask = Image.open(drivable_path)
+        drivable_mask = Image.open(drivable_path).convert("RGB")
 
-        # Object Detection
-        det_annotation = self.det_map.get(img_name, {})
-        bboxes = self._extract_bboxes(det_annotation)
-        
-        # Pose Estimation
-        pose_annotation = self.pose_map.get(img_name, {})
-        if not isinstance(pose_annotation, dict):
-            pose_annotation = {}
-        keypoints = self._extract_keypoints(pose_annotation)
+        # Lane Path
+        lane_path = os.path.join(self.lane_dir, self.lane_filenames[idx])
+        lane_mask = Image.open(lane_path)
+
+        # # Object Detection
+        # det_annotation = self.det_map.get(img_name, {})
+        # bboxes = self._extract_bboxes(det_annotation)
 
         if self.transform:
             image = self.transform(image)
             drivable_mask = self.transform(drivable_mask)
+            lane_mask = self.transform(lane_mask)
 
         image = v2.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))(image)
 
-        return image, drivable_mask, bboxes, keypoints
+        return image, drivable_mask, lane_mask
 
-def collate_fn(batch):
-    images, drivable_masks, bboxes, keypoints = zip(*batch)
-
-    images = torch.stack(images, dim=0)
-    drivable_masks = torch.stack(drivable_masks, dim=0)
-
-    return images, drivable_masks, bboxes, keypoints
-
-transforms = v2.Compose([v2.Resize((360, 540)), 
+transforms = v2.Compose([v2.Resize((256, 256)),
                          v2.ToImage(),
                          v2.ToDtype(torch.float32, scale=True)
                         ])
 
 train_dataset = BDD100KDataset(
-    image_dir="/mnt/c/Users/User/Documents/Homework/CSCE 753 (CVRP)/HydraNet/100k_images_train/bdd100k/images/100k/train/",
-    drivable_dir="/mnt/c/Users/User/Documents/Homework/CSCE 753 (CVRP)/HydraNet/bdd100k_drivable_labels_trainval/bdd100k/labels/drivable/masks/train/",
-    det_json="/mnt/c/Users/User/Documents/Homework/CSCE 753 (CVRP)/HydraNet/bdd100k_det_20_labels_trainval/bdd100k/labels/det_20/det_train.json",
-    pose_json="/mnt/c/Users/User/Documents/Homework/CSCE 753 (CVRP)/HydraNet/bdd100k_pose_labels_trainval/bdd100k/labels/pose_21/pose_train.json",
-    transform=transforms
+    image_dir="100k_images_train/bdd100k/images/100k/train/",
+    drivable_dir="bdd100k_drivable_labels_trainval/bdd100k/labels/drivable/colormaps/train/",
+    lane_dir="bdd100k_lane_labels_trainval/bdd100k/labels/lane/masks/train/",
+    det_json="bdd100k_det_20_labels_trainval/bdd100k/labels/det_20/det_train.json",
+    transform=transforms,
 )
 
 val_dataset = BDD100KDataset(
-    image_dir="/mnt/c/Users/User/Documents/Homework/CSCE 753 (CVRP)/HydraNet/100k_images_val/bdd100k/images/100k/val/",
-    drivable_dir="/mnt/c/Users/User/Documents/Homework/CSCE 753 (CVRP)/HydraNet/bdd100k_drivable_labels_trainval/bdd100k/labels/drivable/masks/val/",
-    det_json="/mnt/c/Users/User/Documents/Homework/CSCE 753 (CVRP)/HydraNet/bdd100k_det_20_labels_trainval/bdd100k/labels/det_20/det_val.json",
-    pose_json="/mnt/c/Users/User/Documents/Homework/CSCE 753 (CVRP)/HydraNet/bdd100k_pose_labels_trainval/bdd100k/labels/pose_21/pose_val.json",
-    transform=transforms
+    image_dir="100k_images_val/bdd100k/images/100k/val/",
+    drivable_dir="bdd100k_drivable_labels_trainval/bdd100k/labels/drivable/colormaps/val/",
+    lane_dir="bdd100k_lane_labels_trainval/bdd100k/labels/lane/masks/val/",
+    det_json="bdd100k_det_20_labels_trainval/bdd100k/labels/det_20/det_val.json",
+    transform=transforms,
 )
 
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, collate_fn=collate_fn)
-val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, collate_fn=collate_fn)
+train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
 
-epochs = 50
-batch_size = 128
-lr = 0.0001
+class DynamicWeightAveraging:
+    def __init__(self, num_tasks, T=2.0, K=None):
+        self.num_tasks = num_tasks
+        self.T = T
+        self.K = K if K is not None else num_tasks
+        self.loss_history = torch.ones(num_tasks, 2)
+
+    def update_weights(self, losses):
+        wk = self.loss_history[:, 0] / self.loss_history[:, 1]
+
+        exp_wk = torch.exp(wk / self.T)
+        weights = self.K * exp_wk / torch.sum(exp_wk)
+
+        self.loss_history[:, 1] = self.loss_history[:, 0]
+        self.loss_history[:, 0] = torch.tensor(losses)
+
+        return weights
+
+epochs = 30
+batch_size = 32
+lr = 1e-3
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-model = HydraNet().to(device)
-optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-age_criteroen = nn.L1Loss()
-race_criteroen = nn.CrossEntropyLoss()
-gender_criteroen = nn.BCEWithLogitsLoss()
+config = HydraNetConfig(
+    regnet="regnet_y_400mf",
+    image_size=(3, 256, 256),
+    bifpn_channels=45,
+    n_bifpn_blocks=3,
+)
+
+model = HydraNetFactory(config).to(device)
+optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
+scheduler = CosineAnnealingLR(optimizer=optimizer, T_max=epochs)
+
+lane_criterion = nn.BCEWithLogitsLoss()
+drivable_criterion = nn.CrossEntropyLoss()
+bbox_criterion = nn.SmoothL1Loss()
+
+dwa = DynamicWeightAveraging(num_tasks=2)
+
+train_losses = []
+train_lane_losses = []
+train_drivable_losses = []
+val_losses = []
+val_lane_losses = []
+val_drivable_losses = []
 
 for epoch in range(epochs):
     model.train()
-    total_loss = 0
-    total_age_loss = 0
-    total_race_loss = 0
-    total_gender_loss = 0
+    total_train_loss = 0
+    total_train_lane_loss = 0
+    total_train_drivable_loss = 0
+    total_train_bbox_loss = 0
 
-    for batch in tqdm(train_loader):
-        images = batch["image"].to(device)
-        ages = batch["age"].to(device)
-        races = batch["race"].to(device)
-        genders = batch["gender"].to(device)
-
-        preds = model(images)
-        age_loss = age_criteroen(preds["age"], ages.unsqueeze(1).float())
-        race_loss = race_criteroen(preds["race"], races)
-        gender_loss = gender_criteroen(preds["gender"], genders.unsqueeze(1).float())
-
-        loss = age_loss + race_loss + gender_loss
-
-        total_loss += loss.item()
-        total_age_loss += age_loss.item()
-        total_race_loss += race_loss.item()
-        total_gender_loss += gender_loss.item()
-
-        loss.backward()
-        optimizer.step()
+    for batch, data in enumerate(tqdm(train_loader)):
         optimizer.zero_grad()
+        images, drivable_masks, lane_masks = data
+        images = images.to(device)
+        drivable_masks = drivable_masks.to(device)
+        lane_masks = lane_masks.to(device)
+
+        p1, p2, p3, p4, lane_det_output, drivable_area_output = model(images)
+
+        drivable_loss = drivable_criterion(drivable_area_output, drivable_masks)
+        bbox_loss = 0
+        # bbox_loss = bbox_criterion(torch.cat([p1, p2, p3, p4], dim=1), bboxes)
+        lane_loss = lane_criterion(lane_det_output, lane_masks)
+
+        weights = dwa.update_weights([lane_loss.item(), drivable_loss.item()])
+        total_loss = weights[0] * lane_loss + weights[1] * drivable_loss
+
+        total_loss.backward()
+        optimizer.step()
+
+        total_train_loss += total_loss.item()
+        total_train_drivable_loss += drivable_loss.item()
+        #total_train_bbox_loss += bbox_loss.item()
+        total_train_lane_loss += lane_loss.item()
+
+        if (batch + 1) % 100 == 0:
+            loss = total_train_loss / (batch + 1)
+            lane_loss_current = total_train_lane_loss / (batch + 1)
+            drivable_loss_current = total_train_drivable_loss / (batch + 1)
+            bbox_loss_current = total_train_bbox_loss / (batch + 1)
+            current = (batch + 1) * batch_size
+
+            print(f"Training loss: {loss:>7f}  [{current:>5d}/{len(train_loader.dataset):>5d}]")
+            print(f"Lane Loss: {lane_loss_current:>7f} | Drivable Loss: {drivable_loss_current:>7f} | BBox Loss: {bbox_loss_current:>7f}")
 
     print(
-        f"Epoch {epoch} Loss: {total_loss/len(train_loader)} Age Loss: {total_age_loss/len(train_loader)} Race Loss: {total_race_loss/len(train_loader)} Gender Loss: {total_gender_loss/len(train_loader)}"
+        f"Epoch {epoch+1} | Total Train Loss: {total_train_loss/len(train_loader):.4f} | "
+        f"Train Lane Loss: {total_train_lane_loss/len(train_loader):.4f} | "
+        f"Train Drivable Loss: {total_train_drivable_loss/len(train_loader):.4f} | "
+        f"Train BBox Loss: {total_train_bbox_loss/len(train_loader):.4f}"
     )
+
+    model.eval()
+    total_val_loss = 0
+    total_val_lane_loss = 0
+    total_val_drivable_loss = 0
+    total_val_bbox_loss = 0
+
+    with torch.no_grad():
+        for images, drivable_masks, lane_masks in tqdm(val_loader):
+            images = images.to(device)
+            drivable_masks = drivable_masks.to(device)
+            lane_masks = lane_masks.to(device)
+
+            p1, p2, p3, p4, lane_det_output, drivable_area_output = model(images)
+
+            drivable_loss = drivable_criterion(drivable_area_output, drivable_masks)
+            bbox_loss = 0
+            # bbox_loss = bbox_criterion(torch.cat([p1, p2, p3, p4], dim=1), bboxes)
+            lane_loss = lane_criterion(lane_det_output, lane_masks)
+
+            total_loss = drivable_loss + bbox_loss + lane_loss
+
+            total_val_loss += total_loss.item()
+            total_val_drivable_loss += drivable_loss.item()
+            #total_val_bbox_loss += bbox_loss.item()
+            total_val_lane_loss += lane_loss.item()
+
+    print(
+        f"Total Val Loss: {total_val_loss/len(val_loader):.4f} | "
+        f"Val Lane Loss: {total_val_lane_loss/len(val_loader):.4f} | "
+        f"Val Drivable Loss: {total_val_drivable_loss/len(val_loader):.4f} | "
+        f"Val BBox Loss: {total_val_bbox_loss/len(val_loader):.4f}"
+    )
+
+    train_losses.append(total_train_loss/len(train_loader))
+    train_lane_losses.append(total_train_lane_loss/len(train_loader))
+    train_drivable_losses.append(total_train_drivable_loss/len(train_loader))
+    val_losses.append(total_val_loss/len(val_loader))
+    val_lane_losses.append(total_val_lane_loss/len(train_loader))
+    val_drivable_losses.append(total_val_drivable_loss/len(train_loader))
+
+    scheduler.step()
+    save_checkpoint(model, optimizer, scheduler, epoch+1, train_losses, val_losses)
