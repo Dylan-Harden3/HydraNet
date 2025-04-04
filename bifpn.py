@@ -7,22 +7,22 @@ class BiFPNBlock(nn.Module):
     def __init__(self, n_channels, pyramid_shape):
         super(BiFPNBlock, self).__init__()
         self.p34_td_fuse = FastNormalizedFusion(2)
-        self.p34_td_conv = ConvBlock(n_channels, n_channels, 1)
+        self.p34_td_conv = ConvBlock(n_channels, n_channels, 3, 1, 1)
 
         self.p23_td_fuse = FastNormalizedFusion(2)
-        self.p23_td_conv = ConvBlock(n_channels, n_channels, 1)
+        self.p23_td_conv = ConvBlock(n_channels, n_channels, 3, 1, 1)
 
         self.p12_td_fuse = FastNormalizedFusion(2)
-        self.p12_td_conv = ConvBlock(n_channels, n_channels, 1)
+        self.p12_td_conv = ConvBlock(n_channels, n_channels, 3, 1, 1)
 
         self.p12_bu_fuse = FastNormalizedFusion(3)
-        self.p12_bu_conv = ConvBlock(n_channels, n_channels, 1)
+        self.p12_bu_conv = ConvBlock(n_channels, n_channels, 3, 1, 1)
 
         self.p23_bu_fuse = FastNormalizedFusion(3)
-        self.p23_bu_conv = ConvBlock(n_channels, n_channels, 1)
+        self.p23_bu_conv = ConvBlock(n_channels, n_channels, 3, 1, 1)
 
         self.p4_bu_fuse = FastNormalizedFusion(2)
-        self.p4_bu_conv = ConvBlock(n_channels, n_channels, 1)
+        self.p4_bu_conv = ConvBlock(n_channels, n_channels, 3, 1, 1)
 
         self.pyramid_shape = pyramid_shape
 
