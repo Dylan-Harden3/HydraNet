@@ -1,13 +1,13 @@
 import os
-import torch
-from PIL import Image
-import numpy as np
 import json
+from detectron2.structures import BoxMode
+from PIL import Image
+import torch
+import numpy as np
 from torch.utils.data import Dataset
 from torchvision.transforms import v2
 import torchvision.transforms
 import cv2
-from detectron2.structures import BoxMode
 
 # counts with these classes in train set:
 # {'traffic light': 187871, 'traffic sign': 238270, 'vehicle': 751722, 'person': 96929}
@@ -27,7 +27,7 @@ CATEGORY_TO_CLASS = {
     "rider": 1,
     # 2/3 for traffic light/sign
     "traffic light": 2,
-    "traffic sign": 3
+    "traffic sign": 3,
 }
 
 
@@ -106,8 +106,6 @@ class BDD100KDataset(Dataset):
         # Bounding Boxes
         bboxes = self._extract_bboxes(self.det_map.get(img_name, {}), self.max_bboxes_per_image)
 
-        images = [image, drivable_mask, lane_mask]
-
         if self.image_resize:
             image = self.image_resize(image)
             drivable_mask = self.mask_resize(drivable_mask)
@@ -132,23 +130,19 @@ class BDD100KDataset(Dataset):
         
         return image, segmentation_mask, bboxes
 
-def get_dataset_dicts(split, category_to_class=CATEGORY_TO_CLASS):
+def get_dataset_dicts(split):
     if split == "train":
-        image_dir="100k_images_train/bdd100k/images/100k/train/"
-        drivable_dir="da_seg_annotations/bdd_seg_gt/train/"
-        lane_dir="ll_seg_annotations/bdd_lane_gt/train"
-        det_json="bdd100k_det_20_labels_trainval/bdd100k/labels/det_20/det_train.json"
+        image_dir = "100k_images_train/bdd100k/images/100k/train/"
+        drivable_dir = "/home/dylan/Documents/HydraNet/bdd100k_drivable_labels_trainval/bdd100k/labels/drivable/class_masks/train"
+        det_json = "bdd100k_det_20_labels_trainval/bdd100k/labels/det_20/det_train.json"
     elif split == "val":
-        image_dir="100k_images_val/bdd100k/images/100k/val/"
-        drivable_dir="da_seg_annotations/bdd_seg_gt/train/"
-        lane_dir="ll_seg_annotations/bdd_lane_gt/train"
-        det_json="bdd100k_det_20_labels_trainval/bdd100k/labels/det_20/det_val.json"
+        image_dir = "100k_images_val/bdd100k/images/100k/val/"
+        drivable_dir = "/home/dylan/Documents/HydraNet/bdd100k_drivable_labels_trainval/bdd100k/labels/drivable/class_masks/val"
+        det_json = "bdd100k_det_20_labels_trainval/bdd100k/labels/det_20/det_val.json"
     elif split == "test":
         pass
 
     image_filenames = sorted(os.listdir(image_dir))
-    drivable_filenames = sorted(os.listdir(drivable_dir))
-    lane_filenames = sorted(os.listdir(lane_dir))
 
     with open(det_json, "r") as f:
         det_annotations = json.load(f)
@@ -158,6 +152,9 @@ def get_dataset_dicts(split, category_to_class=CATEGORY_TO_CLASS):
     for idx, filename in enumerate(image_filenames):
         record = {}
         file_path = os.path.join(image_dir, filename)
+        record["sem_seg_file_name"] = os.path.join(
+            drivable_dir, filename.replace(".jpg", ".png")
+        )
 
         record["file_name"] = file_path
         record["image_id"] = idx
