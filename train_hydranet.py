@@ -1,11 +1,3 @@
-from detectron2.data import MetadataCatalog, DatasetCatalog
-from detectron2.engine import DefaultTrainer
-from detectron2.config import get_cfg
-import os
-from dataset import get_dataset_dicts
-from detectron2.evaluation import inference_on_dataset, SemSegEvaluator
-from detectron2.data import build_detection_test_loader
-import json
 import torch
 from torch import nn
 from detectron2.modeling import build_backbone
@@ -18,7 +10,31 @@ from detectron2.modeling import (
 from detectron2.structures import ImageList
 from detectron2.modeling.postprocessing import detector_postprocess
 from detectron2.modeling.meta_arch.panoptic_fpn import sem_seg_postprocess
-from detectron2.evaluation import COCOEvaluator
+from detectron2.data import MetadataCatalog, DatasetCatalog
+from detectron2 import model_zoo
+from detectron2.engine import DefaultTrainer
+from detectron2.config import get_cfg
+import os
+from dataset import get_dataset_dicts
+
+
+class DynamicWeightAveraging:
+    def __init__(self, num_tasks, T=2.0, K=None):
+        self.num_tasks = num_tasks
+        self.T = T
+        self.K = K if K is not None else num_tasks
+        self.loss_history = torch.ones(num_tasks, 2)
+
+    def update_weights(self, losses):
+        wk = self.loss_history[:, 0] / self.loss_history[:, 1]
+
+        exp_wk = torch.exp(wk / self.T)
+        weights = self.K * exp_wk / torch.sum(exp_wk)
+
+        self.loss_history[:, 1] = self.loss_history[:, 0]
+        self.loss_history[:, 0] = losses.clone().detach()
+
+        return weights
 
 
 @META_ARCH_REGISTRY.register()
@@ -33,6 +49,7 @@ class DetectionAndSegmentation(nn.Module):
         self.sem_seg_head = build_sem_seg_head(cfg, self.backbone.output_shape())
         self.device = torch.device(cfg.MODEL.DEVICE)
 
+        self.dwa = DynamicWeightAveraging(num_tasks=2)
         self.register_buffer(
             "pixel_mean", torch.tensor(cfg.MODEL.PIXEL_MEAN).view(-1, 1, 1), False
         )
@@ -81,9 +98,32 @@ class DetectionAndSegmentation(nn.Module):
 
         if self.training:
             losses = {}
-            losses.update(sem_seg_losses)
-            losses.update(proposal_losses)
-            losses.update(detector_losses)
+            loss_seg = sum(
+                v
+                for v in sem_seg_losses.values()
+                if torch.is_tensor(v) and v.numel() == 1
+            )
+            loss_det = sum(
+                v
+                for v in proposal_losses.values()
+                if torch.is_tensor(v) and v.numel() == 1
+            ) + sum(
+                v
+                for v in detector_losses.values()
+                if torch.is_tensor(v) and v.numel() == 1
+            )
+
+            current_task_losses = torch.stack([loss_seg.detach(), loss_det.detach()])
+            dwa_weights = self.dwa.update_weights(current_task_losses)
+            weight_seg, weight_det = dwa_weights[0], dwa_weights[1]
+
+            for k, v in sem_seg_losses.items():
+                losses[k] = v * weight_seg
+            for k, v in proposal_losses.items():
+                losses[k] = v * weight_det
+            for k, v in detector_losses.items():
+                losses[k] = v * weight_det
+
             return losses
 
         processed_results = []
@@ -99,14 +139,14 @@ class DetectionAndSegmentation(nn.Module):
         return processed_results
 
 
-SEGMENTATION_CLASSES = ["background", "drivable", "lane"]
 DETECTION_CLASSES = ["vehicle", "person", "traffic light", "traffic sign"]
-OUTPUT_RESULTS_DIR = "./merged-results/"
-MODEL_CONFIG = "/home/dylan/Documents/HydraNet/detectron2/configs/Base-RCNN-FPN.yaml"
-OUTPUT_DIR = "/home/dylan/Documents/HydraNet/logs-merged-out"
+SEGMENTATION_CLASSES = ["background", "drivable", "lane"]
+OUTPUT_DIR = "/home/dylan/Documents/HydraNet/logs-merged"
+LR = 3e-4
 BATCH_SIZE = 4
-CHECKPOINT_DIR = "/home/dylan/Documents/HydraNet/logs-merged/"
-os.makedirs(OUTPUT_RESULTS_DIR, exist_ok=True)
+STEPS = 300000  # 17500 steps per epoch
+MODEL_CONFIG = "/home/dylan/Documents/HydraNet/detectron2/configs/Base-RCNN-FPN.yaml"
+ZOO_WEIGHTS_FILE = "COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml"
 
 for split in ["train", "val"]:
     dataset_name = f"BDD100k_{split}"
@@ -117,19 +157,22 @@ for split in ["train", "val"]:
         ignore_label=0,
     )
 
-
 cfg = get_cfg()
 cfg.merge_from_file(MODEL_CONFIG)
+cfg.OUTPUT_DIR = OUTPUT_DIR
 cfg.DATASETS.TRAIN = ("BDD100k_train",)
 cfg.DATASETS.TEST = ("BDD100k_val",)
 cfg.DATALOADER.NUM_WORKERS = 2
 cfg.SOLVER.IMS_PER_BATCH = BATCH_SIZE
+cfg.SOLVER.BASE_LR = LR
+cfg.SOLVER.MAX_ITER = STEPS
 cfg.SOLVER.STEPS = []
 cfg.SOLVER.CHECKPOINT_PERIOD = 10000
 
 cfg.MODEL.ROI_HEADS.BATCH_SIZE_PER_IMAGE = 64
 cfg.MODEL.ROI_HEADS.NUM_CLASSES = len(DETECTION_CLASSES)
 cfg.MODEL.DEVICE = "cuda"
+cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url(ZOO_WEIGHTS_FILE)
 
 cfg.MODEL.META_ARCHITECTURE = "DetectionAndSegmentation"
 cfg.MODEL.MASK_ON = False
@@ -143,44 +186,8 @@ cfg.MODEL.RESNETS.DEPTH = 50
 cfg.MODEL.FPN.IN_FEATURES = ["res2", "res3", "res4", "res5"]
 cfg.MODEL.SEM_SEG_HEAD.NAME = "SemSegFPNHead"
 cfg.MODEL.SEM_SEG_HEAD.NUM_CLASSES = len(SEGMENTATION_CLASSES)
+os.makedirs(cfg.OUTPUT_DIR, exist_ok=True)
+trainer = DefaultTrainer(cfg)
+trainer.resume_or_load(resume=False)
 
-for w in [
-    "model_0009999.pth",
-    "model_0019999.pth",
-    "model_0029999.pth",
-    "model_0039999.pth",
-    "model_0049999.pth",
-    "model_0059999.pth",
-    "model_0069999.pth",
-    "model_0079999.pth",
-    "model_0089999.pth",
-    "model_0099999.pth",
-    "model_0109999.pth",
-    "model_0119999.pth",
-    "model_0129999.pth",
-    "model_0139999.pth",
-    "model_0149999.pth",
-    "model_0159999.pth",
-    "model_0169999.pth",
-]:
-    cfg.MODEL.WEIGHTS = CHECKPOINT_DIR + w
-
-    trainer = DefaultTrainer(cfg)
-    trainer.resume_or_load(resume=False)
-
-    evaluator = SemSegEvaluator("BDD100k_val", False, output_dir=OUTPUT_RESULTS_DIR)
-    val_loader = build_detection_test_loader(cfg, "BDD100k_val")
-    seg_results = inference_on_dataset(trainer.model, val_loader, evaluator)
-    print("Seg results:", seg_results)
-
-    evaluator = COCOEvaluator("BDD100k_val", ("bbox",), False, output_dir="./output/")
-    val_loader = build_detection_test_loader(cfg, "BDD100k_val")
-    det_results = inference_on_dataset(trainer.model, val_loader, evaluator)
-    print("Detection results:", det_results)
-
-    cur_dir = CHECKPOINT_DIR + w.replace(".pth", "") + "/results/"
-    os.makedirs(cur_dir, exist_ok=True)
-    with open(os.path.join(cur_dir, "results.json"), "w") as f:
-        json.dump(seg_results, f, indent=4)
-    with open(os.path.join(cur_dir, "results.json"), "a") as f:
-        json.dump(det_results, f, indent=4)
+trainer.train()
